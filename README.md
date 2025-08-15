@@ -5,7 +5,8 @@ A Discord bot that integrates with your Ark spots database to provide cave and s
 ## Features
 
 - `/caves` command to fetch all modded cave spots for a specific server and map
-- `/update` command to refresh cave spots in a channel (clears channel and sends updated list)
+- `/update` command to refresh cave spots in a channel or thread (clears channel/thread and sends updated list)
+- **Thread Support**: Both commands work in both text channels and threads
 - Server and map header display
 - Farm spots automatically sorted to the end
 - Video file attachments support
@@ -42,6 +43,8 @@ A Discord bot that integrates with your Ark spots database to provide cave and s
    - Use Slash Commands
    - Embed Links
    - Read Message History
+   - Create Public Threads (for thread support)
+   - Manage Messages (for `/update` command to clear channels/threads)
 4. Copy the generated URL and invite the bot to your server
 
 ### 3. Environment Configuration
@@ -97,6 +100,7 @@ This will:
 5. Show coordinates, cave damage, and descriptions
 6. Handle video files and external video links
 7. Format with beautiful Discord styling
+8. **Works in both text channels and threads**
 
 ### `/update` Command
 
@@ -105,12 +109,28 @@ This will:
 ```
 
 This will:
-1. Scan the current channel for the last server/map header
-2. Clear all messages in the channel
+1. Scan the current channel or thread for the last server/map header
+2. Clear all messages in the channel or thread
 3. Fetch updated modded cave spots
 4. Send the fresh list with the same formatting as `/caves`
 
-**Note:** Requires Administrator permissions and a previous `/caves` command in the channel.
+**Note:** Requires Administrator permissions and a previous `/caves` command in the channel or thread. Works in both text channels and threads.
+
+## Thread Usage
+
+Both `/caves` and `/update` commands work seamlessly in threads:
+
+### Using Commands in Threads
+- Run `/caves` in any thread to get cave spots for that thread
+- Run `/update` in a thread to refresh the spots in that thread
+- The bot will automatically detect if you're in a thread or channel
+- Thread messages are cleared and updated just like channel messages
+
+### Thread Benefits
+- Keep cave spot discussions organized in separate threads
+- Multiple server/map combinations can have their own threads
+- Threads automatically archive after inactivity
+- Easier to manage and find specific cave spot information
 
 ## API Integration
 
@@ -127,7 +147,20 @@ The bot connects to your existing API endpoints:
   - Use Slash Commands
   - Embed Links
   - Read Message History
-  - Manage Messages (for `/update` command to clear channels)
+  - Create Public Threads (for thread support)
+  - Manage Messages (for `/update` command to clear channels/threads)
+
+### Thread-Specific Permissions
+
+When using commands in threads, the bot also needs:
+- **Send Messages** permission in the specific thread
+- **Read Message History** permission in the thread
+- **Manage Messages** permission in the thread (for `/update` command)
+
+**Note:** Thread permissions can be different from channel permissions. If a command fails in a thread, check:
+1. Thread is not archived or locked
+2. Bot has the required permissions in the thread
+3. Thread permissions are not overridden by role or user permissions
 
 ## Development
 
@@ -136,15 +169,17 @@ The bot connects to your existing API endpoints:
 ```
 src/
 ├── commands/          # Slash command definitions
-│   └── caves.ts      # Caves command
+│   ├── caves.ts       # Caves command
+│   └── update.ts      # Update command
 ├── handlers/          # Interaction handlers
 │   └── interactionHandler.ts
 ├── services/          # API services
 │   └── apiService.ts
 ├── utils/             # Utilities
-│   └── logger.ts
+│   ├── logger.ts
+│   └── threadUtils.ts # Thread utility functions
 ├── deploy-commands.ts # Command deployment
-└── index.ts          # Main bot file
+└── index.ts           # Main bot file
 ```
 
 ### Adding New Commands
@@ -168,6 +203,13 @@ The bot uses a simple logger with different levels:
 - Check if the bot token is correct
 - Ensure the bot has the required permissions
 - Check the console for error messages
+
+### Commands Not Working in Threads
+- Ensure the bot has "Send Messages" permission in the thread
+- Check if the thread is archived or locked
+- Verify the bot has "Manage Messages" permission for the `/update` command
+- Check thread-specific permissions in Discord server settings
+- Look for specific error messages in the bot's response
 
 ### Commands Not Appearing
 - Run the deploy-commands script

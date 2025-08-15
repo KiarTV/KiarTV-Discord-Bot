@@ -8,6 +8,12 @@ export async function handleInteraction(interaction: Interaction) {
     if (interaction.isChatInputCommand()) {
       const { commandName } = interaction;
 
+      // Check if interaction is still valid
+      if (!interaction.isRepliable()) {
+        logger.warn(`Interaction is not repliable, skipping`);
+        return;
+      }
+
       switch (commandName) {
         case 'caves':
           await executeCavesCommand(interaction);
@@ -18,10 +24,14 @@ export async function handleInteraction(interaction: Interaction) {
         default:
           logger.warn(`Unknown command: ${commandName}`);
           if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({
-              content: 'Unknown command!',
-              flags: MessageFlags.Ephemeral
-            });
+            try {
+              await interaction.reply({
+                content: 'Unknown command!',
+                flags: MessageFlags.Ephemeral
+              });
+            } catch (error) {
+              logger.warn('Failed to reply to unknown command:', error);
+            }
           }
       }
     } else if (interaction.isButton()) {

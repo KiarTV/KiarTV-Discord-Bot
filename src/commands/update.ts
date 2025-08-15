@@ -1,4 +1,4 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction, TextChannel, AttachmentBuilder, PermissionsBitField, MessageFlags } from 'discord.js';
+import { SlashCommandBuilder, ChatInputCommandInteraction, TextChannel, ThreadChannel, AttachmentBuilder, PermissionsBitField, MessageFlags } from 'discord.js';
 import fetch from 'node-fetch';
 import { fetchSpots } from '../services/apiService';
 import { logger } from '../utils/logger';
@@ -67,6 +67,28 @@ function parseServerAndMapFromHeader(headerText: string): { server: string | nul
   return { server: null, map: null };
 }
 
+async function safeEditReply(interaction: ChatInputCommandInteraction, content: string): Promise<boolean> {
+  try {
+    if (interaction.deferred && !interaction.replied) {
+      await interaction.editReply({ content });
+      return true;
+    }
+    return false;
+  } catch (error) {
+    logger.warn('Failed to edit reply:', error);
+    return false;
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => 
+      setTimeout(() => reject(new Error('Operation timed out')), timeoutMs)
+    )
+  ]);
+}
+
 export async function executeUpdateCommand(interaction: ChatInputCommandInteraction) {
   try {
     // Restrict to users with Administrator permission
@@ -90,24 +112,98 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
       return;
     }
 
-    // Defer the reply immediately to prevent timeout
-    try {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    } catch (error) {
-      logger.warn('Failed to defer reply, interaction may have expired:', error);
+    // Check if interaction is still valid
+    if (!interaction.isRepliable()) {
+      logger.warn('Interaction is not repliable, skipping execution');
       return;
     }
 
+    // Defer the reply immediately to prevent timeout
+    try {
+      await withTimeout(interaction.deferReply({ flags: MessageFlags.Ephemeral }), 2000);
+    } catch (error) {
+      logger.warn('Failed to defer reply, interaction may have expired:', error);
+      // Don't return here, try to handle the interaction anyway
+      // The interaction might still be valid for a brief moment
+    }
+
     const channel = interaction.channel;
-    if (!channel || channel.type !== 0) {
+    if (!channel || (channel.type !== 0 && channel.type !== 11)) {
       try {
-        await interaction.editReply({ content: 'This command can only be used in text channels.' });
+        await interaction.editReply({ content: 'This command can only be used in text channels or threads.' });
       } catch (error) {
         logger.warn('Failed to edit reply:', error);
       }
       return;
     }
-    const textChannel = channel as TextChannel;
+    
+    // Handle both text channels and threads
+    const isThread = channel.type === 11;
+    const textChannel = isThread ? (channel as ThreadChannel).parent as TextChannel : channel as TextChannel;
+    const targetChannel = channel as TextChannel | ThreadChannel;
+
+    // Log channel information for debugging
+    logger.info(`Channel type: ${channel.type}, isThread: ${isThread}, channel name: ${channel.name || 'unnamed'}`);
+
+    // Check if the bot has the required permissions
+    const botMember = interaction.guild?.members.me;
+    if (!botMember) {
+      await safeEditReply(interaction, 'Unable to verify bot permissions. Please ensure the bot has the required permissions.');
+      return;
+    }
+
+    // Check permissions for the target channel/thread
+    const permissions = targetChannel.permissionsFor(botMember);
+    if (!permissions) {
+      await safeEditReply(interaction, 'Unable to verify permissions for this channel/thread.');
+      return;
+    }
+
+    // Check if bot has required permissions
+    const requiredPermissions = [
+      PermissionsBitField.Flags.SendMessages,
+      PermissionsBitField.Flags.ManageMessages,
+      PermissionsBitField.Flags.ReadMessageHistory
+    ];
+
+    const missingPermissions = requiredPermissions.filter(permission => !permissions.has(permission));
+    if (missingPermissions.length > 0) {
+      const permissionNames = missingPermissions.map(p => {
+        switch (p) {
+          case PermissionsBitField.Flags.SendMessages: return 'Send Messages';
+          case PermissionsBitField.Flags.ManageMessages: return 'Manage Messages';
+          case PermissionsBitField.Flags.ReadMessageHistory: return 'Read Message History';
+          default: return 'Unknown Permission';
+        }
+      }).join(', ');
+
+      await safeEditReply(interaction, `Missing required permissions in this ${isThread ? 'thread' : 'channel'}: ${permissionNames}. Please ensure the bot has these permissions.`);
+      return;
+    }
+
+    // Additional check for thread-specific permissions
+    if (isThread) {
+      const threadChannel = channel as ThreadChannel;
+      
+      // Check if thread is archived
+      if (threadChannel.archived) {
+        await safeEditReply(interaction, 'This thread is archived. Please unarchive it first or use the command in an active thread.');
+        return;
+      }
+
+      // Check if thread is locked
+      if (threadChannel.locked) {
+        await safeEditReply(interaction, 'This thread is locked. Please unlock it first or use the command in an unlocked thread.');
+        return;
+      }
+
+      // Check if bot can send messages in this specific thread
+      const threadPermissions = threadChannel.permissionsFor(botMember);
+      if (!threadPermissions?.has(PermissionsBitField.Flags.SendMessages)) {
+        await safeEditReply(interaction, 'The bot does not have permission to send messages in this thread. Please check the thread permissions.');
+        return;
+      }
+    }
 
     // Update the deferred reply to show progress
     try {
@@ -121,7 +217,7 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
     let lastMap: string | null = null;
     
     try {
-      const messages = await textChannel.messages.fetch({ limit: 100 });
+      const messages = await targetChannel.messages.fetch({ limit: 100 });
       
       for (const [_, message] of messages) {
         const { server, map } = parseServerAndMapFromHeader(message.content);
@@ -188,13 +284,13 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
       return (a.type || '').localeCompare(b.type || '');
     });
 
-    // Delete all messages in the channel
+    // Delete all messages in the channel/thread
     try {
       let deletedCount = 0;
       let hasMoreMessages = true;
       
       while (hasMoreMessages) {
-        const messages = await textChannel.messages.fetch({ limit: 100 });
+        const messages = await targetChannel.messages.fetch({ limit: 100 });
         if (messages.size === 0) {
           hasMoreMessages = false;
           break;
@@ -207,7 +303,7 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
         });
         
         if (deletableMessages.size > 0) {
-          await textChannel.bulkDelete(deletableMessages);
+          await targetChannel.bulkDelete(deletableMessages);
           deletedCount += deletableMessages.size;
         }
         
@@ -220,11 +316,11 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       
-      logger.info(`Deleted ${deletedCount} messages from channel`);
+      logger.info(`Deleted ${deletedCount} messages from ${isThread ? 'thread' : 'channel'}`);
     } catch (error) {
       logger.error('Error deleting messages:', error);
       try {
-        await interaction.editReply({ content: 'Failed to clear channel messages. Please try again.' });
+        await interaction.editReply({ content: 'Failed to clear channel/thread messages. Please try again.' });
       } catch (editError) {
         logger.warn('Failed to edit reply:', editError);
       }
@@ -239,9 +335,9 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
     }
 
     // Send server and map header
-    await textChannel.send({ content: `__***# ${lastServer} - ${lastMap}***__\n` });
+    await targetChannel.send({ content: `__***# ${lastServer} - ${lastMap}***__\n` });
     
-    // Now send the detailed information to the channel
+    // Now send the detailed information to the channel/thread
     let lastType: string | null = null;
     let idx = 0;
     let messageCount = 1; // Start at 1 since we already sent the header
@@ -249,12 +345,12 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
 
     for (const spot of spots) {
       if (messageCount >= maxMessages) {
-        await textChannel.send({ content: `... and ${spots.length - messageCount} more spots. Use the command again with more specific parameters to see all spots.` });
+        await targetChannel.send({ content: `... and ${spots.length - messageCount} more spots. Use the command again with more specific parameters to see all spots.` });
         break;
       }
 
       if (spot.type !== lastType) {
-        await textChannel.send({ content: `__***# ${spot.type || 'Unknown'}***__\n` });
+        await targetChannel.send({ content: `__***# ${spot.type || 'Unknown'}***__\n` });
         lastType = spot.type;
         idx = 0;
         messageCount++;
@@ -267,19 +363,19 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
           const buffer = await response.buffer();
           const filename = spot.videoFile.split('/').pop() || 'video.mp4';
           const attachment = new AttachmentBuilder(buffer, { name: filename });
-          await textChannel.send({ content: formatCaveText(spot, idx), files: [attachment] });
-          await textChannel.send({ content: '--------------------------------' });
+          await targetChannel.send({ content: formatCaveText(spot, idx), files: [attachment] });
+          await targetChannel.send({ content: '--------------------------------' });
           messageCount += 2;
         } catch (err) {
           logger.error('Failed to attach video file:', err);
-          await textChannel.send({ content: formatCaveText(spot, idx) + '\n[Failed to attach video file]\n--------------------------------' });
+          await targetChannel.send({ content: formatCaveText(spot, idx) + '\n[Failed to attach video file]\n--------------------------------' });
           messageCount++;
         }
       } else {
         const baseContent = formatCaveText(spot, idx);
         const hasExternalVideoLink = typeof spot.videoUrl === 'string' && spot.videoUrl.length > 0 && !isSupabasePublicUrl(spot.videoUrl);
         const contentToSend = hasExternalVideoLink ? baseContent : `${baseContent}\n--------------------------------`;
-        await textChannel.send({ content: contentToSend });
+        await targetChannel.send({ content: contentToSend });
         messageCount++;
       }
       idx++;
@@ -287,7 +383,7 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
 
     // Final update to the interaction
     try {
-      await interaction.editReply({ content: `✅ Successfully updated and sent ${spots.length} modded cave spots for **${lastServer}** on **${lastMap}** to the channel.` });
+      await interaction.editReply({ content: `✅ Successfully updated and sent ${spots.length} modded cave spots for **${lastServer}** on **${lastMap}** to the ${isThread ? 'thread' : 'channel'}.` });
     } catch (error) {
       logger.warn('Failed to send final confirmation:', error);
     }
