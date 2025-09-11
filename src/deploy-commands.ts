@@ -19,13 +19,24 @@ export async function deployCommands() {
 
     const clientId = process.env.DISCORD_CLIENT_ID;
     const guildId = process.env.DISCORD_GUILD_ID;
+    const argv = process.argv.slice(2);
+    const scopeFromEnv = (process.env.DEPLOY_SCOPE || '').toLowerCase();
+    const forceGlobal = argv.includes('--global') || scopeFromEnv === 'global';
+    const forceGuild = argv.includes('--guild') || scopeFromEnv === 'guild';
 
     if (!clientId) {
       throw new Error('DISCORD_CLIENT_ID is not set');
     }
 
-    if (guildId) {
+    // Decide deployment scope:
+    // Priority: CLI flag > DEPLOY_SCOPE env > legacy behavior (guild if guildId present else global)
+    const shouldDeployToGuild = forceGuild || (!forceGlobal && !!guildId);
+
+    if (shouldDeployToGuild) {
       // Deploy to specific guild (faster for development)
+      if (!guildId) {
+        throw new Error('Cannot deploy to guild: DISCORD_GUILD_ID is not set');
+      }
       await rest.put(
         Routes.applicationGuildCommands(clientId, guildId),
         { body: commands },
