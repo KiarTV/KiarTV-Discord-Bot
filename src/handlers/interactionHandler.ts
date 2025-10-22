@@ -1,6 +1,9 @@
 import { Interaction, Events, AutocompleteInteraction, MessageFlags } from 'discord.js';
 import { executeCavesCommand, handleCavesAutocomplete } from '../commands/caves';
 import { executeUpdateCommand } from '../commands/update';
+import { executeWebhookCommand } from '../commands/webhook';
+import { executeSendCommand } from '../commands/send';
+import { executePopulateThreadCommand, handlePopulateThreadAutocomplete } from '../commands/populateThread';
 import { logger } from '../utils/logger';
 
 export async function handleInteraction(interaction: Interaction) {
@@ -20,6 +23,15 @@ export async function handleInteraction(interaction: Interaction) {
           break;
         case 'update':
           await executeUpdateCommand(interaction);
+          break;
+        case 'populatethread':
+          await executePopulateThreadCommand(interaction);
+          break;
+        case 'webhook':
+          await executeWebhookCommand(interaction);
+          break;
+        case 'send':
+          await executeSendCommand(interaction);
           break;
         default:
           logger.warn(`Unknown command: ${commandName}`);
@@ -69,6 +81,8 @@ export async function handleInteraction(interaction: Interaction) {
       
       if (commandName === 'caves') {
         await handleCavesAutocomplete(interaction as AutocompleteInteraction);
+      } else if (commandName === 'populatethread') {
+        await handlePopulateThreadAutocomplete(interaction as AutocompleteInteraction);
       } else {
         if (!interaction.responded) {
           await interaction.respond([]);

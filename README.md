@@ -5,7 +5,23 @@ A Discord bot that integrates with your Ark spots database to provide cave and s
 ## Features
 
 - `/caves` command to fetch all modded cave spots for a specific server and map
-- `/update` command to refresh cave spots in a channel or thread (clears channel/thread and sends updated list)
+- `/update` command with subcommands to refresh cave spots (clears channel/thread and sends updated list)
+  - `here`: Update this channel/thread using saved config or last header
+  - `all`: Update all saved channels for the guild
+ - `/populatethread` command to clear a target thread and populate all cave messages for a given server and map
+### `/populatethread` Command
+
+```
+/populatethread server:<INX|Fusion|Mesa> forum_id:<Forum Channel ID>
+```
+
+Behavior:
+- Fetches all modded cave spots for the specified server across ALL maps
+- Creates a separate forum post for each map that has spots
+- Each forum post is named `Server - Map` and contains all cave messages for that map
+- Sends all cave messages with the same formatting/attachments used by `/caves`
+- Processes all valid maps for the server automatically
+- Requires Administrator permissions and Create Threads permission in the forum
 - **Thread Support**: Both commands work in both text channels and threads
 - Server and map header display
 - Farm spots automatically sorted to the end
@@ -101,20 +117,22 @@ This will:
 6. Handle video files and external video links
 7. Format with beautiful Discord styling
 8. **Works in both text channels and threads**
+9. Automatically saves the `{server, map}` for this channel/thread so you can run `/update` later without re-specifying
 
 ### `/update` Command
 
+Default behavior (`/update`) resolves server/map using the saved config for this channel (or falls back to scanning the last header), then:
+1. Clear all messages in the channel or thread
+2. Fetch updated modded cave spots
+3. Send the fresh list with the same formatting as `/caves`
+
 ```
-/update
+/update mode:all
 ```
 
-This will:
-1. Scan the current channel or thread for the last server/map header
-2. Clear all messages in the channel or thread
-3. Fetch updated modded cave spots
-4. Send the fresh list with the same formatting as `/caves`
+This will iterate over all channels/threads in the current guild that were saved via `/caves` and run the same update routine in each. A short delay is used between channels to avoid rate limits.
 
-**Note:** Requires Administrator permissions and a previous `/caves` command in the channel or thread. Works in both text channels and threads.
+**Note:** Requires Administrator permissions. Works in both text channels and threads.
 
 ## Thread Usage
 
@@ -161,6 +179,23 @@ When using commands in threads, the bot also needs:
 1. Thread is not archived or locked
 2. Bot has the required permissions in the thread
 3. Thread permissions are not overridden by role or user permissions
+
+## Data Persistence
+
+The bot stores saved channel configurations (server and map) in a JSON file so `/update` can run later without re-specifying options:
+
+- File path: `discord-bot/channel-store.json`
+- Format:
+
+```json
+{
+  "<guildId>": {
+    "<channelId>": { "server": "INX", "map": "Fjordur" }
+  }
+}
+```
+
+If the file is missing or invalid, it will be recreated automatically. Consider adding this file to `.gitignore` if you don't want to commit it.
 
 ## Development
 

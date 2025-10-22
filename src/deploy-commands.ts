@@ -2,13 +2,19 @@ import { REST, Routes } from 'discord.js';
 import { config } from 'dotenv';
 import { cavesCommand } from './commands/caves';
 import { updateCommand } from './commands/update';
+import { webhookCommand } from './commands/webhook';
+import { sendCommand } from './commands/send';
 import { logger } from './utils/logger';
+import { populateThreadCommand } from './commands/populateThread';
 
 config();
 
 const commands = [
   cavesCommand.toJSON(),
   updateCommand.toJSON(),
+  populateThreadCommand.toJSON(),
+  webhookCommand.toJSON(),
+  sendCommand.toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN!);

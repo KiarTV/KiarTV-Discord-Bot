@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, AutocompleteInteraction, TextChannel, ThreadChannel, AttachmentBuilder, PermissionsBitField, MessageFlags } from 'discord.js';
 import fetch from 'node-fetch';
 import { fetchSpots } from '../services/apiService';
+import { upsertChannelConfig } from '../services/channelStore';
 import { logger } from '../utils/logger';
 
 // Valid maps (from serverMapSelector.tsx)
@@ -257,6 +258,18 @@ export async function executeCavesCommand(interaction: ChatInputCommandInteracti
     }
 
     logger.info(`Caves command executed for server: ${server}, map: ${map}`);
+
+    // Save mapping immediately for this channel
+    try {
+      const guildId = interaction.guildId;
+      const channelId = interaction.channelId;
+      if (guildId && channelId) {
+        await upsertChannelConfig(guildId, channelId, { server: server!, map: map! });
+        logger.info(`Saved channel config for guild ${guildId}, channel ${channelId}: ${server} - ${map}`);
+      }
+    } catch (saveErr) {
+      logger.warn('Failed to save channel config:', saveErr);
+    }
 
     // Update the deferred reply to show progress
     try {
