@@ -1,6 +1,7 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, ForumChannel, ThreadChannel, AttachmentBuilder, PermissionsBitField, MessageFlags } from 'discord.js';
 import fetch from 'node-fetch';
 import { fetchSpots, fetchMapsForServer } from '../services/apiService';
+import { upsertChannelConfig } from '../services/channelStore';
 import { logger } from '../utils/logger';
 
 // Valid maps (from serverMapSelector.tsx)
@@ -41,13 +42,16 @@ export const populateThreadCommand = new SlashCommandBuilder()
   );
 
 function formatCaveText(spot: any, idx: number): string {
+  const caveDamageText = spot.caveDamage?.trim();
+  const showCaveDamage = caveDamageText && caveDamageText.toLowerCase() !== 'nothing' && caveDamageText !== '';
+  
   return [
-    `** ${idx + 1}. ${spot.name || 'Unnamed Cave'}**`,
-    `- Coords: ${spot.y}, ${spot.x}\n`,
-    `- Cave Damage: ${spot.caveDamage || 'Unknown'}\n`,
-    spot.description ? `Description:\n\`\`\`\n${spot.description}\n\`\`\`\n` : undefined,
+    `## ** ${idx + 1}. ${spot.name || 'Unnamed Cave'}**`,
+    `- Coords: ${spot.y}, ${spot.x}`,
+    showCaveDamage ? `- Cave Damage: ${caveDamageText}` : undefined,
+    spot.description ? `\nDescription:\n\`\`\`\n${spot.description}\n\`\`\`\n` : undefined,
     spot.videoUrl ? `Video:\n ${spot.videoUrl}\n` : undefined,
-  ].filter(Boolean).join('');
+  ].filter(Boolean).join('\n');
 }
 
 function isVideoFile(url: string): boolean {
@@ -108,13 +112,37 @@ export async function executePopulateThreadCommand(interaction: ChatInputCommand
     const botMember = interaction.guild?.members.me;
     if (!botMember) { await interaction.editReply({ content: 'Unable to verify bot permissions.' }); return; }
     const perms = forum.permissionsFor(botMember);
-    const required = [PermissionsBitField.Flags.CreatePublicThreads, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory];
+    const required = [PermissionsBitField.Flags.CreatePublicThreads, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory, PermissionsBitField.Flags.ManageThreads];
     if (!perms || !required.every(p => perms.has(p))) {
-      await interaction.editReply({ content: 'Missing required permissions in the target forum (Create Threads, Send Messages, Read History).' });
+      await interaction.editReply({ content: 'Missing required permissions in the target forum (Create Threads, Send Messages, Read History, Manage Threads).' });
       return;
     }
 
-    await interaction.editReply({ content: 'Creating forum posts for all maps...' });
+    await interaction.editReply({ content: 'Clearing existing forum posts and creating new ones...' });
+
+    // Clear existing forum posts first
+    try {
+      const existingThreads = await forum.threads.fetchActive();
+      let deletedCount = 0;
+      
+      for (const [, thread] of existingThreads.threads) {
+        try {
+          await thread.delete();
+          deletedCount++;
+          await new Promise(r => setTimeout(r, 500)); // Small delay to avoid rate limits
+        } catch (err) {
+          logger.warn(`Failed to delete thread ${thread.name}:`, err);
+        }
+      }
+      
+      if (deletedCount > 0) {
+        logger.info(`Deleted ${deletedCount} existing forum posts`);
+        await new Promise(r => setTimeout(r, 1000)); // Wait a bit before creating new ones
+      }
+    } catch (err) {
+      logger.error('Error clearing existing forum posts:', err);
+      await interaction.editReply({ content: 'Warning: Failed to clear some existing forum posts. Continuing with creation...' });
+    }
 
     let totalMessageCount = 0;
     let mapsWithSpots = 0;
@@ -148,6 +176,12 @@ export async function executePopulateThreadCommand(interaction: ChatInputCommand
 
         createdThreads.push(thread);
 
+        // Save the channel association for this server/map combination
+        if (interaction.guildId && thread.id) {
+          await upsertChannelConfig(interaction.guildId, thread.id, { server, map });
+          logger.info(`Saved forum post ${thread.id} for server ${server}, map ${map} in guild ${interaction.guildId}`);
+        }
+
         let lastType: string | null = null;
         let idx = 0;
         let messageCount = 1;
@@ -159,7 +193,7 @@ export async function executePopulateThreadCommand(interaction: ChatInputCommand
             break;
           }
           if (spot.type !== lastType) {
-            await thread.send({ content: `${spot.type || 'Unknown'}` });
+            await thread.send({ content: `# *————— ${spot.type || 'Unknown'} —————*\n` });
             lastType = spot.type;
             idx = 0;
             messageCount++;

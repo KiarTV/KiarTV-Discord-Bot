@@ -43,13 +43,16 @@ export const cavesCommand = new SlashCommandBuilder()
   );
 
 function formatCaveText(spot: any, idx: number): string {
+  const caveDamageText = spot.caveDamage?.trim();
+  const showCaveDamage = caveDamageText && caveDamageText.toLowerCase() !== 'nothing' && caveDamageText !== '';
+  
   return [
-    `** ${idx + 1}. ${spot.name || 'Unnamed Cave'}**`,
-    `- Coords: ${spot.y}, ${spot.x}\n`,
-    `- Cave Damage: ${spot.caveDamage || 'Unknown'}\n`,
-    spot.description ? `Description:\n\`\`\`\n${spot.description}\n\`\`\`\n` : undefined,
+    `## ** ${idx + 1}. ${spot.name || 'Unnamed Cave'}**`,
+    `- Coords: ${spot.y}, ${spot.x}`,
+    showCaveDamage ? `- Cave Damage: ${caveDamageText}` : undefined,
+    spot.description ? `\nDescription:\n\`\`\`\n${spot.description}\n\`\`\`\n` : undefined,
     spot.videoUrl ? `Video:\n ${spot.videoUrl}\n` : undefined,
-  ].filter(Boolean).join('');
+  ].filter(Boolean).join('\n');
 }
 
 function isVideoFile(url: string): boolean {
@@ -335,7 +338,7 @@ export async function executeCavesCommand(interaction: ChatInputCommandInteracti
       }
 
       if (spot.type !== lastType) {
-        await targetChannel.send({ content: `__***# ${spot.type || 'Unknown'}***__\n` });
+        await targetChannel.send({ content: `# *————— ${spot.type || 'Unknown'} —————*\n` });
         lastType = spot.type;
         idx = 0;
         messageCount++;
