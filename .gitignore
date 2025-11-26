@@ -15,3 +15,5 @@ yarn-error.log*
 # Optional: IDE settings
 .vscode/
 .idea/
+channel-store.json
+channel-store.json
