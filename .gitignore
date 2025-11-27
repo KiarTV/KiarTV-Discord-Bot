@@ -16,4 +16,3 @@ yarn-error.log*
 .vscode/
 .idea/
 channel-store.json
-channel-store.json
