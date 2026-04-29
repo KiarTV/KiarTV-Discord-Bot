@@ -1,4 +1,3 @@
-import fetch from 'node-fetch';
 import { logger } from '../utils/logger';
 
 export interface WebhookMessage {
@@ -78,7 +77,7 @@ export async function sendWebhookMessage(
       };
     }
 
-    const responseData = await response.json();
+    const responseData = await response.json() as { id?: string };
     
     logger.info(`Webhook message sent successfully: ${responseData.id}`);
     

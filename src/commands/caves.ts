@@ -1,5 +1,4 @@
 import { SlashCommandBuilder, ChatInputCommandInteraction, AutocompleteInteraction, TextChannel, ThreadChannel, AttachmentBuilder, PermissionsBitField, MessageFlags } from 'discord.js';
-import fetch from 'node-fetch';
 import { fetchSpots } from '../services/apiService';
 import { upsertChannelConfig } from '../services/channelStore';
 import { logger } from '../utils/logger';
@@ -348,7 +347,7 @@ export async function executeCavesCommand(interaction: ChatInputCommandInteracti
         try {
           const response = await fetch(spot.videoFile);
           if (!response.ok) throw new Error('Failed to fetch video file');
-          const buffer = await response.buffer();
+          const buffer = Buffer.from(await response.arrayBuffer());
           const filename = spot.videoFile.split('/').pop() || 'video.mp4';
           const attachment = new AttachmentBuilder(buffer, { name: filename });
           await targetChannel.send({ content: formatCaveText(spot, idx), files: [attachment] });
