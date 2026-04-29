@@ -1,0 +1,47 @@
+# Discord bot stack
+#
+# Bot only:
+#   docker compose up -d --build
+#
+# Bot + Cloudflare Tunnel (token in .env as CLOUDFLARE_TUNNEL_TOKEN):
+#   docker compose --profile tunnel up -d --build
+#
+# Zero Trust → Tunnel → Public hostname → HTTP → http://discord-bot:${BOT_HEALTH_PORT:-3589}
+# Vercel: DISCORD_BOT_HEALTH_URL=https://<hostname>/health
+
+name: discord-bot
+
+services:
+  discord-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${BOT_HEALTH_PORT:-3589}:${BOT_HEALTH_PORT:-3589}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'wget -q -O- --header="Authorization: Bearer $$BOT_HEALTH_SECRET" "http://127.0.0.1:$${BOT_HEALTH_PORT:-3589}/health" || exit 1',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 75s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      discord-bot:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      TUNNEL_TOKEN: eyJhIjoiNThlNGZkZTExYTkwOGFjOWQyZDI0NzE2MzIxOTFmNzgiLCJ0IjoiMjYyNmI0MjQtYTA0Ny00ZmFmLThlMWUtNzU5MWE0YWM4NGQzIiwicyI6Ik9XRmhNMlpoT0dNdE16UmlNQzAwWldJMUxUazNOV1l0TnpOaVpEUXlaV1EyTmpVMiJ9
+    command: tunnel --no-autoupdate run
