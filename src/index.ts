@@ -2,6 +2,7 @@ import './load-env';
 import { Client, GatewayIntentBits, Collection, Events } from 'discord.js';
 import { deployCommands } from './deploy-commands';
 import { handleInteraction } from './handlers/interactionHandler';
+import { startHealthServer } from './healthServer';
 import { logger } from './utils/logger';
 
 // Extend the Client type to include commands
@@ -21,6 +22,8 @@ const client = new Client({
 
 // Command collection
 client.commands = new Collection();
+
+startHealthServer(client);
 
 // Bot ready event
 client.once(Events.ClientReady, () => {

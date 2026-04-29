@@ -241,6 +241,15 @@ sudo apt install certbot python3-certbot-nginx -y
 sudo certbot --nginx -d your-bot-domain.com
 ```
 
+## HTTP health endpoint (Docker / admin dashboard)
+
+The bot exposes **`GET /health`** on **`BOT_HEALTH_PORT`** (default **3589**). Responses require **`Authorization: Bearer <BOT_HEALTH_SECRET>`** unless **`BOT_HEALTH_SKIP_AUTH=true`** (local debugging only).
+
+- **Docker Compose** uses this endpoint for container healthchecks (`wget` + Bearer header).
+- **Vercel** probes the same URL via **`DISCORD_BOT_HEALTH_URL`** (e.g. `https://bot.example.com/health`). Set **`DISCORD_BOT_HEALTH_SECRET`** on Vercel to the **same value** as **`BOT_HEALTH_SECRET`** on the bot host.
+
+JSON includes Discord readiness, uptime, guild count, gateway ping, KiArTV `/servers` connectivity (`apiConnected`), and optional `botTag` / `botUserId`.
+
 ## Monitoring and Maintenance
 
 ### 1. View Bot Logs
@@ -356,15 +365,13 @@ EOF
 chmod +x /home/ubuntu/backup-bot.sh
 ```
 
-## Admin Dashboard Features
+## Admin dashboard (`/admin/discordbot`)
 
-Once deployed, your admin dashboard at `/admin/discordbot` will provide:
+The site can **probe** the bot’s public health URL (Vercel env `DISCORD_BOT_HEALTH_*`) and **smoke-test** the same `/spots` data the `/caves` command uses. It does **not** start/stop Docker or edit Discord tokens (those stay in Vercel and on the bot host).
 
-- **Bot Status**: Online/offline status, uptime, guild count
-- **Configuration Management**: View and edit bot settings
-- **Control Panel**: Start/stop/restart bot
-- **Test Commands**: Verify API connectivity
-- **Live Monitoring**: Real-time bot performance
+- **Status**: Proxied metrics from `GET /health` (identity, ping, KiArTV API reachability)
+- **Connectivity**: Read-only flags for which env vars are set on the Next.js server
+- **Smoke test**: Calls your site’s `/api/spots` with a server/map for quick validation
 
 ## Cost Estimation
 

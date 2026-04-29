@@ -35,6 +35,8 @@ services:
       start_period: 75s
 
   cloudflared:
+    profiles:
+      - tunnel
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     depends_on:
@@ -43,5 +45,5 @@ services:
     env_file:
       - .env
     environment:
-      TUNNEL_TOKEN: eyJhIjoiNThlNGZkZTExYTkwOGFjOWQyZDI0NzE2MzIxOTFmNzgiLCJ0IjoiMjYyNmI0MjQtYTA0Ny00ZmFmLThlMWUtNzU5MWE0YWM4NGQzIiwicyI6Ik9XRmhNMlpoT0dNdE16UmlNQzAwWldJMUxUazNOV1l0TnpOaVpEUXlaV1EyTmpVMiJ9
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     command: tunnel --no-autoupdate run
