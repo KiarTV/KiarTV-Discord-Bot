@@ -6,6 +6,10 @@ import { testConnection } from './services/apiService';
 const PORT = Number(process.env.BOT_HEALTH_PORT) || 3589;
 const SECRET = process.env.BOT_HEALTH_SECRET?.trim();
 const SKIP_AUTH = process.env.BOT_HEALTH_SKIP_AUTH === 'true';
+const API_CACHE_TTL_MS = 15_000;
+
+let apiCacheResult = false;
+let apiCacheTs = 0;
 
 export type HealthPayload = {
   isOnline: boolean;
@@ -53,19 +57,23 @@ export function startHealthServer(client: Client): http.Server {
 
     let apiConnected = false;
     try {
-      apiConnected = await testConnection();
+      if (Date.now() - apiCacheTs > API_CACHE_TTL_MS) {
+        apiCacheResult = await testConnection();
+        apiCacheTs = Date.now();
+      }
+      apiConnected = apiCacheResult;
     } catch {
       apiConnected = false;
     }
 
-    const uptimeMs =
+    const uptimeSec =
       ready && client.readyAt
-        ? Date.now() - client.readyAt.getTime()
-        : Math.floor(process.uptime() * 1000);
+        ? Math.floor((Date.now() - client.readyAt.getTime()) / 1000)
+        : Math.floor(process.uptime());
 
     const payload: HealthPayload = {
       isOnline: ready,
-      uptime: uptimeMs,
+      uptime: uptimeSec,
       guildCount: ready ? client.guilds.cache.size : 0,
       lastPing: discordPingMs >= 0 ? discordPingMs : 0,
       apiConnected,

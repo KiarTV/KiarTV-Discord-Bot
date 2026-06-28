@@ -6,8 +6,8 @@
 # Bot + Cloudflare Tunnel (token in .env as CLOUDFLARE_TUNNEL_TOKEN):
 #   docker compose --profile tunnel up -d --build
 #
-# Zero Trust → Tunnel → Public hostname → HTTP → http://discord-bot:${BOT_HEALTH_PORT:-3589}
-# Vercel: DISCORD_BOT_HEALTH_URL=https://<hostname>/health
+# Tunnel route: bot.kiartv.de → http://discord-bot:${BOT_HEALTH_PORT:-3589}
+# Website env:  DISCORD_BOT_HEALTH_URL=https://bot.kiartv.de/health
 
 name: discord-bot
 
@@ -33,3 +33,15 @@ services:
       timeout: 10s
       retries: 3
       start_period: 75s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=eyJhIjoiNThlNGZkZTExYTkwOGFjOWQyZDI0NzE2MzIxOTFmNzgiLCJ0IjoiMjYyNmI0MjQtYTA0Ny00ZmFmLThlMWUtNzU5MWE0YWM4NGQzIiwicyI6Ik5UUXlPV05tWldJdFpEUXhPUzAwWm1WaExUZzVOakl0TjJNME1qVXlaVFpsWW1WbE5EWXdOMlpqTURrdE9EY3dNQzAwWXpJd0xXRmlZamt0TXpGaVlUUmhaVFJsTURVMyJ9
+    depends_on:
+      discord-bot:
+        condition: service_healthy
+    profiles:
+      - tunnel

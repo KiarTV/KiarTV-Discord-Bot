@@ -1,25 +1,26 @@
-import { SlashCommandBuilder, ChatInputCommandInteraction, TextChannel, ThreadChannel, AttachmentBuilder, PermissionsBitField, MessageFlags } from 'discord.js';
+import {
+  SlashCommandBuilder,
+  ChatInputCommandInteraction,
+  TextChannel,
+  ThreadChannel,
+  AttachmentBuilder,
+  PermissionsBitField,
+  MessageFlags,
+  ChannelType,
+} from 'discord.js';
 import { fetchSpots } from '../services/apiService';
 import { logger } from '../utils/logger';
 import { getAllGuildChannels, getChannelConfig } from '../services/channelStore';
-
-// Valid maps (from serverMapSelector.tsx)
-const validMaps = [
-  "The Island",
-  "The Center",
-  "Scorched Earth",
-  "Ragnarok",
-  "Aberration",
-  "Extinction",
-  "Valguero",
-  "Genesis: Part 1",
-  "Crystal Isles",
-  "Genesis: Part 2",
-  "Lost Island",
-  "Fjordur",
-];
-
-const validServers = ["INX", "Fusion", "Mesa"];
+import { getPortalBindings } from '../services/portalSync';
+import {
+  formatCaveText,
+  isVideoFile,
+  isSupabasePublicUrl,
+  withTimeout,
+  requireAdmin,
+  safeEditReply,
+} from '../utils/commandUtils';
+import { VALID_MAPS, VALID_SERVERS, MAX_MESSAGES, MAX_VIDEO_BYTES } from '../constants';
 
 export const updateCommand = new SlashCommandBuilder()
   .setName('update')
@@ -33,154 +34,72 @@ export const updateCommand = new SlashCommandBuilder()
       )
   );
 
-function formatCaveText(spot: any, idx: number): string {
-  const caveDamageText = spot.caveDamage?.trim();
-  const showCaveDamage = caveDamageText && caveDamageText.toLowerCase() !== 'nothing' && caveDamageText !== '';
-  
-  return [
-    `## ** ${idx + 1}. ${spot.name || 'Unnamed Cave'}**`,
-    `- Coords: ${spot.y}, ${spot.x}`,
-    showCaveDamage ? `- Cave Damage: ${caveDamageText}` : undefined,
-    spot.description ? `\nDescription:\n\`\`\`\n${spot.description}\n\`\`\`\n` : undefined,
-    spot.videoUrl ? `Video:\n ${spot.videoUrl}\n` : undefined,
-  ].filter(Boolean).join('\n');
-}
-
-function isVideoFile(url: string): boolean {
-  return /\.(mp4|webm|mov)$/i.test(url);
-}
-
-function isSupabasePublicUrl(url: string): boolean {
-  try {
-    const configuredBaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-    if (configuredBaseUrl) {
-      const configuredHost = new URL(configuredBaseUrl).hostname;
-      return url.includes(configuredHost) && /\/storage\/v1\/object\/public\//i.test(url);
-    }
-  } catch {
-    // ignore URL parse errors and fall through to generic check
-  }
-  return /supabase\.(co|in)\/storage\/v1\/object\/public\//i.test(url);
-}
-
 function parseServerAndMapFromHeader(headerText: string): { server: string | null; map: string | null } {
-  // Parse header format: __***# {server} - {map}***__
   const match = headerText.match(/__\*\*\*#\s*([^-]+)\s*-\s*([^*]+)\*\*\*__/);
   if (match) {
     const server = match[1].trim();
     const map = match[2].trim();
-    
-    // Validate server and map
-    if (validServers.includes(server) && validMaps.includes(map)) {
+    if (
+      VALID_SERVERS.includes(server as typeof VALID_SERVERS[number]) &&
+      VALID_MAPS.includes(map as typeof VALID_MAPS[number])
+    ) {
       return { server, map };
     }
   }
   return { server: null, map: null };
 }
 
-async function safeEditReply(interaction: ChatInputCommandInteraction, content: string): Promise<boolean> {
-  try {
-    if (interaction.deferred && !interaction.replied) {
-      await interaction.editReply({ content });
-      return true;
-    }
-    return false;
-  } catch (error) {
-    logger.warn('Failed to edit reply:', error);
-    return false;
-  }
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => 
-      setTimeout(() => reject(new Error('Operation timed out')), timeoutMs)
-    )
-  ]);
-}
-
 export async function executeUpdateCommand(interaction: ChatInputCommandInteraction) {
   try {
-    // Restrict to users with Administrator permission
-    if (!interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) {
-      if (!interaction.replied && !interaction.deferred) {
-        try {
-          await interaction.reply({ 
-            content: 'You must be a server admin to use this command.', 
-            flags: MessageFlags.Ephemeral 
-          });
-        } catch (error) {
-          logger.warn('Failed to send permission error:', error);
-        }
-      }
-      return;
-    }
+    if (!await requireAdmin(interaction)) return;
 
-    // Check if interaction is already handled
     if (interaction.replied || interaction.deferred) {
       logger.warn('Interaction already handled, skipping execution');
       return;
     }
-
-    // Check if interaction is still valid
     if (!interaction.isRepliable()) {
       logger.warn('Interaction is not repliable, skipping execution');
       return;
     }
 
-    // Defer the reply immediately to prevent timeout
     try {
       await withTimeout(interaction.deferReply({ flags: MessageFlags.Ephemeral }), 2000);
     } catch (error) {
       logger.warn('Failed to defer reply, interaction may have expired:', error);
-      // Don't return here, try to handle the interaction anyway
-      // The interaction might still be valid for a brief moment
     }
 
     const mode = interaction.options.getString('mode') || 'here';
     const channel = interaction.channel;
-    if (!channel || (channel.type !== 0 && channel.type !== 11)) {
-      try {
-        await interaction.editReply({ content: 'This command can only be used in text channels or threads.' });
-      } catch (error) {
-        logger.warn('Failed to edit reply:', error);
-      }
+    if (!channel || (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.PublicThread)) {
+      await safeEditReply(interaction, 'This command can only be used in text channels or threads.');
       return;
     }
-    
-    // Handle both text channels and threads
-    const isThread = channel.type === 11;
-    const textChannel = isThread ? (channel as ThreadChannel).parent as TextChannel : channel as TextChannel;
+
+    const isThread = channel.type === ChannelType.PublicThread;
     const targetChannel = channel as TextChannel | ThreadChannel;
 
-    // Log channel information for debugging
     logger.info(`Channel type: ${channel.type}, isThread: ${isThread}, channel name: ${channel.name || 'unnamed'}`);
 
-    // Check if the bot has the required permissions
     const botMember = interaction.guild?.members.me;
     if (!botMember) {
       await safeEditReply(interaction, 'Unable to verify bot permissions. Please ensure the bot has the required permissions.');
       return;
     }
 
-    // Check permissions for the target channel/thread
     const permissions = targetChannel.permissionsFor(botMember);
     if (!permissions) {
       await safeEditReply(interaction, 'Unable to verify permissions for this channel/thread.');
       return;
     }
 
-    // Check if bot has required permissions
     const requiredPermissions = [
       PermissionsBitField.Flags.SendMessages,
       PermissionsBitField.Flags.ManageMessages,
-      PermissionsBitField.Flags.ReadMessageHistory
+      PermissionsBitField.Flags.ReadMessageHistory,
     ];
-
-    const missingPermissions = requiredPermissions.filter(permission => !permissions.has(permission));
+    const missingPermissions = requiredPermissions.filter(p => !permissions.has(p));
     if (missingPermissions.length > 0) {
-      const permissionNames = missingPermissions.map(p => {
+      const names = missingPermissions.map(p => {
         switch (p) {
           case PermissionsBitField.Flags.SendMessages: return 'Send Messages';
           case PermissionsBitField.Flags.ManageMessages: return 'Manage Messages';
@@ -188,48 +107,42 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
           default: return 'Unknown Permission';
         }
       }).join(', ');
-
-      await safeEditReply(interaction, `Missing required permissions in this ${isThread ? 'thread' : 'channel'}: ${permissionNames}. Please ensure the bot has these permissions.`);
+      await safeEditReply(interaction, `Missing required permissions in this ${isThread ? 'thread' : 'channel'}: ${names}. Please ensure the bot has these permissions.`);
       return;
     }
 
-    // Additional check for thread-specific permissions
     if (isThread) {
       const threadChannel = channel as ThreadChannel;
-      
-      // Check if thread is archived
       if (threadChannel.archived) {
         await safeEditReply(interaction, 'This thread is archived. Please unarchive it first or use the command in an active thread.');
         return;
       }
-
-      // Check if thread is locked
       if (threadChannel.locked) {
         await safeEditReply(interaction, 'This thread is locked. Please unlock it first or use the command in an unlocked thread.');
         return;
       }
-
-      // Check if bot can send messages in this specific thread
-      const threadPermissions = threadChannel.permissionsFor(botMember);
-      if (!threadPermissions?.has(PermissionsBitField.Flags.SendMessages)) {
+      if (!threadChannel.permissionsFor(botMember)?.has(PermissionsBitField.Flags.SendMessages)) {
         await safeEditReply(interaction, 'The bot does not have permission to send messages in this thread. Please check the thread permissions.');
         return;
       }
     }
 
     if (mode === 'all') {
-      try {
-        await interaction.editReply({ content: 'Loading saved channels for this guild...' });
-      } catch {}
+      await interaction.editReply({ content: 'Loading saved channels for this guild...' });
       const guildId = interaction.guildId;
       if (!guildId) {
         await interaction.editReply({ content: 'This command can only be used in a guild.' });
         return;
       }
+      // Merge local config with portal-managed bindings (portal entries win on conflict).
       const saved = await getAllGuildChannels(guildId);
-      const entries = Object.entries(saved);
+      const merged: Record<string, { server: string; map: string }> = { ...saved };
+      for (const b of await getPortalBindings(guildId)) {
+        merged[b.channelId] = { server: b.server, map: b.map };
+      }
+      const entries = Object.entries(merged);
       if (entries.length === 0) {
-        await interaction.editReply({ content: 'No saved channels found. Use `/caves` in channels to save server/map first.' });
+        await interaction.editReply({ content: 'No saved channels found. Use `/caves` in channels (or add a binding in the portal) first.' });
         return;
       }
       let success = 0;
@@ -237,7 +150,7 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
       for (const [savedChannelId, cfg] of entries) {
         try {
           const target = await interaction.client.channels.fetch(savedChannelId);
-          if (!target || (target.type !== 0 && target.type !== 11)) {
+          if (!target || (target.type !== ChannelType.GuildText && target.type !== ChannelType.PublicThread)) {
             failed++;
             continue;
           }
@@ -253,15 +166,15 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
       return;
     }
 
-    // subcommand here: prefer saved config; fallback to header scan
+    // mode === 'here': prefer saved config; fallback to header scan
     let lastServer: string | null = null;
     let lastMap: string | null = null;
 
-    try {
-      await interaction.editReply({ content: 'Resolving server/map for this channel...' });
-    } catch {}
+    await interaction.editReply({ content: 'Resolving server/map for this channel...' });
 
-    const savedCfg = interaction.guildId ? await getChannelConfig(interaction.guildId, interaction.channelId) : null;
+    const savedCfg = interaction.guildId
+      ? await getChannelConfig(interaction.guildId, interaction.channelId)
+      : null;
     if (savedCfg) {
       lastServer = savedCfg.server;
       lastMap = savedCfg.map;
@@ -269,7 +182,7 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
     } else {
       try {
         const messages = await targetChannel.messages.fetch({ limit: 100 });
-        for (const [_, message] of messages) {
+        for (const [, message] of messages) {
           const { server, map } = parseServerAndMapFromHeader(message.content);
           if (server && map) {
             lastServer = server;
@@ -288,18 +201,16 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
     }
 
     await updateChannel(targetChannel, lastServer, lastMap, async (msg) => {
-      try { await interaction.editReply({ content: msg }); } catch {}
+      try { await interaction.editReply({ content: msg }); } catch { /* ignore stale interaction */ }
     });
 
   } catch (error) {
     logger.error('Error executing update command:', error);
-    
-    // Check if interaction is still valid before trying to respond
     if (!interaction.replied && !interaction.deferred) {
       try {
-        await interaction.reply({ 
-          content: 'An error occurred while processing the command. Please try again later.', 
-          flags: MessageFlags.Ephemeral 
+        await interaction.reply({
+          content: 'An error occurred while processing the command. Please try again later.',
+          flags: MessageFlags.Ephemeral,
         });
       } catch (replyError) {
         logger.warn('Failed to reply to interaction:', replyError);
@@ -314,8 +225,13 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
   }
 }
 
-async function updateChannel(targetChannel: TextChannel | ThreadChannel, server: string, map: string, progress?: (msg: string) => Promise<void> | void) {
-  const isThread = targetChannel.type === 11;
+async function updateChannel(
+  targetChannel: TextChannel | ThreadChannel,
+  server: string,
+  map: string,
+  progress?: (msg: string) => Promise<void> | void,
+) {
+  const isThread = targetChannel.type === ChannelType.PublicThread;
   if (progress) await progress(`Fetching updated spots for **${server}** on **${map}**...`);
   const spots = await fetchSpots(server, map, 'modded');
   if (!spots || spots.length === 0) {
@@ -336,9 +252,11 @@ async function updateChannel(targetChannel: TextChannel | ThreadChannel, server:
     while (hasMoreMessages) {
       const messages = await targetChannel.messages.fetch({ limit: 100 });
       if (messages.size === 0) { hasMoreMessages = false; break; }
-      const deletableMessages = messages.filter(msg => (Date.now() - msg.createdTimestamp) < 14 * 24 * 60 * 60 * 1000);
+      const deletableMessages = messages.filter(
+        msg => (Date.now() - msg.createdTimestamp) < 14 * 24 * 60 * 60 * 1000,
+      );
       if (deletableMessages.size > 0) {
-        await (targetChannel as TextChannel | ThreadChannel).bulkDelete(deletableMessages);
+        await targetChannel.bulkDelete(deletableMessages);
       }
       if (messages.size < 100) { hasMoreMessages = false; }
       await new Promise(r => setTimeout(r, 1000));
@@ -350,22 +268,20 @@ async function updateChannel(targetChannel: TextChannel | ThreadChannel, server:
   }
 
   if (progress) await progress(`Found ${spots.length} spots. Sending to channel...`);
-
-  await (targetChannel as TextChannel | ThreadChannel).send({ content: `__***# ${server} - ${map}***__\n` });
+  await targetChannel.send({ content: `__***# ${server} - ${map}***__\n` });
 
   let lastType: string | null = null;
   let idx = 0;
   let messageCount = 1;
-  const maxMessages = 50;
 
   for (const spot of spots) {
-    if (messageCount >= maxMessages) {
-      await (targetChannel as TextChannel | ThreadChannel).send({ content: `... and ${spots.length - messageCount} more spots. Use the command again with more specific parameters to see all spots.` });
+    if (messageCount >= MAX_MESSAGES) {
+      await targetChannel.send({ content: `... and ${spots.length - messageCount} more spots. Use the command again with more specific parameters to see all spots.` });
       break;
     }
     if (spot.type !== lastType) {
-      await (targetChannel as TextChannel | ThreadChannel).send({ content: `# *————— ${spot.type || 'Unknown'} —————*\n` });
-      lastType = spot.type;
+      await targetChannel.send({ content: `# *————— ${spot.type || 'Unknown'} —————*\n` });
+      lastType = spot.type ?? null;
       idx = 0;
       messageCount++;
     }
@@ -373,25 +289,40 @@ async function updateChannel(targetChannel: TextChannel | ThreadChannel, server:
       try {
         const response = await fetch(spot.videoFile);
         if (!response.ok) throw new Error('Failed to fetch video file');
-        const buffer = Buffer.from(await response.arrayBuffer());
-        const filename = spot.videoFile.split('/').pop() || 'video.mp4';
-        const attachment = new AttachmentBuilder(buffer, { name: filename });
-        await (targetChannel as TextChannel | ThreadChannel).send({ content: formatCaveText(spot, idx), files: [attachment] });
-        await (targetChannel as TextChannel | ThreadChannel).send({ content: '--------------------------------' });
-        messageCount += 2;
+        const contentLength = Number(response.headers.get('content-length') ?? 0);
+        if (contentLength > MAX_VIDEO_BYTES) {
+          logger.warn(`Video file too large (${contentLength} bytes), skipping attachment`);
+          await targetChannel.send({ content: formatCaveText(spot, idx) + '\n[Video file too large to attach]\n--------------------------------' });
+          messageCount++;
+        } else {
+          const buffer = Buffer.from(await response.arrayBuffer());
+          const filename = spot.videoFile.split('/').pop() || 'video.mp4';
+          const attachment = new AttachmentBuilder(buffer, { name: filename });
+          await targetChannel.send({ content: formatCaveText(spot, idx), files: [attachment] });
+          await targetChannel.send({ content: '--------------------------------' });
+          messageCount += 2;
+        }
       } catch (err) {
         logger.error('Failed to attach video file:', err);
-        await (targetChannel as TextChannel | ThreadChannel).send({ content: formatCaveText(spot, idx) + '\n[Failed to attach video file]\n--------------------------------' });
+        await targetChannel.send({ content: formatCaveText(spot, idx) + '\n[Failed to attach video file]\n--------------------------------' });
         messageCount++;
       }
     } else {
       const baseContent = formatCaveText(spot, idx);
-      const hasExternalVideoLink = typeof spot.videoUrl === 'string' && spot.videoUrl.length > 0 && !isSupabasePublicUrl(spot.videoUrl);
+      const hasExternalVideoLink =
+        typeof spot.videoUrl === 'string' &&
+        spot.videoUrl.length > 0 &&
+        !isSupabasePublicUrl(spot.videoUrl);
       const contentToSend = hasExternalVideoLink ? baseContent : `${baseContent}\n--------------------------------`;
-      await (targetChannel as TextChannel | ThreadChannel).send({ content: contentToSend });
+      await targetChannel.send({ content: contentToSend });
       messageCount++;
     }
     idx++;
   }
-  if (progress) await progress(`✅ Successfully updated and sent ${Math.min(messageCount, maxMessages)} messages for **${server}** on **${map}** to the ${isThread ? 'thread' : 'channel'}.`);
+
+  if (progress) {
+    await progress(
+      `✅ Successfully updated and sent ${Math.min(messageCount, MAX_MESSAGES)} messages for **${server}** on **${map}** to the ${isThread ? 'thread' : 'channel'}.`,
+    );
+  }
 }

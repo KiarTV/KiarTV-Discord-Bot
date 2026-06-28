@@ -11,6 +11,7 @@ type GuildStore = Record<string, SavedChannelConfig>;
 type Store = Record<string, GuildStore>;
 
 const DATA_FILE = path.resolve(__dirname, '../../channel-store.json');
+const TMP_FILE = `${DATA_FILE}.tmp`;
 
 async function readStore(): Promise<Store> {
   try {
@@ -19,8 +20,8 @@ async function readStore(): Promise<Store> {
     if (parsed && typeof parsed === 'object') {
       return parsed as Store;
     }
-  } catch (error: any) {
-    if (error?.code !== 'ENOENT') {
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
       logger.warn('channelStore read failed, recreating file:', error);
     }
   }
@@ -28,26 +29,34 @@ async function readStore(): Promise<Store> {
 }
 
 async function writeStore(store: Store): Promise<void> {
-  try {
-    const dir = path.dirname(DATA_FILE);
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(DATA_FILE, JSON.stringify(store, null, 2), 'utf8');
-  } catch (error) {
-    logger.error('channelStore write failed:', error);
-  }
+  const dir = path.dirname(DATA_FILE);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(TMP_FILE, JSON.stringify(store, null, 2), 'utf8');
+  await fs.rename(TMP_FILE, DATA_FILE);
+}
+
+/** Serializes all writes through a promise chain to prevent concurrent corruption. */
+let writeQueue: Promise<void> = Promise.resolve();
+
+function enqueueWrite(fn: () => Promise<void>): Promise<void> {
+  writeQueue = writeQueue
+    .then(fn)
+    .catch(err => logger.error('channelStore write failed:', err));
+  return writeQueue;
 }
 
 export async function upsertChannelConfig(guildId: string, channelId: string, config: SavedChannelConfig): Promise<void> {
-  const store = await readStore();
-  if (!store[guildId]) store[guildId] = {};
-  // Enforce uniqueness per (server,map) within the guild
-  for (const [savedChannelId, savedCfg] of Object.entries(store[guildId])) {
-    if (savedCfg.server === config.server && savedCfg.map === config.map && savedChannelId !== channelId) {
-      delete store[guildId][savedChannelId];
+  return enqueueWrite(async () => {
+    const store = await readStore();
+    if (!store[guildId]) store[guildId] = {};
+    for (const [savedChannelId, savedCfg] of Object.entries(store[guildId])) {
+      if (savedCfg.server === config.server && savedCfg.map === config.map && savedChannelId !== channelId) {
+        delete store[guildId][savedChannelId];
+      }
     }
-  }
-  store[guildId][channelId] = config;
-  await writeStore(store);
+    store[guildId][channelId] = config;
+    await writeStore(store);
+  });
 }
 
 export async function getChannelConfig(guildId: string, channelId: string): Promise<SavedChannelConfig | null> {
@@ -61,11 +70,11 @@ export async function getAllGuildChannels(guildId: string): Promise<Record<strin
 }
 
 export async function removeChannelConfig(guildId: string, channelId: string): Promise<void> {
-  const store = await readStore();
-  if (store[guildId] && store[guildId][channelId]) {
-    delete store[guildId][channelId];
-    await writeStore(store);
-  }
+  return enqueueWrite(async () => {
+    const store = await readStore();
+    if (store[guildId]?.[channelId]) {
+      delete store[guildId][channelId];
+      await writeStore(store);
+    }
+  });
 }
-
-

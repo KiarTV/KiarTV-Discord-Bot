@@ -3,7 +3,6 @@ import { config } from 'dotenv';
 import { cavesCommand } from './commands/caves';
 import { updateCommand } from './commands/update';
 import { webhookCommand } from './commands/webhook';
-import { sendCommand } from './commands/send';
 import { logger } from './utils/logger';
 import { populateThreadCommand } from './commands/populateThread';
 
@@ -14,7 +13,6 @@ const commands = [
   updateCommand.toJSON(),
   populateThreadCommand.toJSON(),
   webhookCommand.toJSON(),
-  sendCommand.toJSON(),
 ];
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN!);
@@ -29,17 +27,35 @@ export async function deployCommands() {
     const scopeFromEnv = (process.env.DEPLOY_SCOPE || '').toLowerCase();
     const forceGlobal = argv.includes('--global') || scopeFromEnv === 'global';
     const forceGuild = argv.includes('--guild') || scopeFromEnv === 'guild';
+    // "both" = instant on the dev guild AND global for every other server.
+    // Note: Discord lists guild + global commands separately, so the dev guild
+    // will show each command twice until one set is cleared.
+    const forceBoth = argv.includes('--both') || scopeFromEnv === 'both';
 
     if (!clientId) {
       throw new Error('DISCORD_CLIENT_ID is not set');
     }
 
-    // Decide deployment scope:
-    // Priority: CLI flag > DEPLOY_SCOPE env > legacy behavior (guild if guildId present else global)
-    const shouldDeployToGuild = forceGuild || (!forceGlobal && !!guildId);
+    // Decide deployment scope.
+    // Priority: CLI flag / DEPLOY_SCOPE > legacy behavior (guild if guildId set, else global).
+    let deployGuild: boolean;
+    let deployGlobal: boolean;
+    if (forceBoth) {
+      deployGuild = true;
+      deployGlobal = true;
+    } else if (forceGuild) {
+      deployGuild = true;
+      deployGlobal = false;
+    } else if (forceGlobal) {
+      deployGuild = false;
+      deployGlobal = true;
+    } else {
+      deployGuild = !!guildId;
+      deployGlobal = !guildId;
+    }
 
-    if (shouldDeployToGuild) {
-      // Deploy to specific guild (faster for development)
+    if (deployGuild) {
+      // Deploy to the dev guild (instant — good for live testing).
       if (!guildId) {
         throw new Error('Cannot deploy to guild: DISCORD_GUILD_ID is not set');
       }
@@ -48,8 +64,10 @@ export async function deployCommands() {
         { body: commands },
       );
       logger.info(`Successfully reloaded application (/) commands for guild ${guildId}.`);
-    } else {
-      // Deploy globally (takes up to an hour to propagate)
+    }
+
+    if (deployGlobal) {
+      // Deploy globally (takes up to an hour to propagate the first time).
       await rest.put(
         Routes.applicationCommands(clientId),
         { body: commands },
@@ -57,6 +75,6 @@ export async function deployCommands() {
       logger.info('Successfully reloaded application (/) commands globally.');
     }
   } catch (error) {
-    logger.error('Error deploying commands:', error);
+    logger.error('Error deploying commands', error);
   }
 } 
