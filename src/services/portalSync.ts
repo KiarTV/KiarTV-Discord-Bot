@@ -14,6 +14,7 @@ import { logger } from '../utils/logger';
  */
 
 const API_CACHE_TTL_MS = 20_000;
+export const PORTAL_FORUM_MAP = 'ALL';
 let apiCache = { value: false, ts: 0 };
 
 async function isApiConnected(): Promise<boolean> {
@@ -150,6 +151,48 @@ export async function upsertBinding(
   }
 }
 
+/** Store one authoritative cave forum for the guild and remove legacy channel rows. */
+export async function upsertForumBinding(
+  guildId: string,
+  forumId: string,
+  forumName: string | null,
+  server: string,
+): Promise<void> {
+  const supabase = getSupabase();
+  if (!supabase) return;
+  try {
+    const { data, error } = await supabase
+      .from('guild_channel_bindings')
+      .upsert(
+        {
+          discord_guild_id: guildId,
+          channel_id: forumId,
+          channel_name: forumName,
+          server,
+          map: PORTAL_FORUM_MAP,
+        },
+        { onConflict: 'discord_guild_id,channel_id' },
+      )
+      .select('id')
+      .single();
+    if (error || !data) {
+      logger.warn('upsertForumBinding failed:', error?.message ?? 'No row returned');
+      return;
+    }
+
+    const { error: cleanupError } = await supabase
+      .from('guild_channel_bindings')
+      .delete()
+      .eq('discord_guild_id', guildId)
+      .neq('id', data.id);
+    if (cleanupError) {
+      logger.warn('upsertForumBinding legacy cleanup failed:', cleanupError.message);
+    }
+  } catch (err) {
+    logger.warn('upsertForumBinding threw:', err);
+  }
+}
+
 /** Remove a channel binding from the portal. */
 export async function removeBinding(guildId: string, channelId: string): Promise<void> {
   const supabase = getSupabase();
@@ -165,6 +208,43 @@ export async function removeBinding(guildId: string, channelId: string): Promise
   }
 }
 
+export interface PortalForumBinding {
+  channelId: string;
+  channelName: string | null;
+  server: string;
+}
+
+/** Read the single portal-managed cave forum for a guild. */
+export async function getPortalForumBinding(
+  guildId: string,
+): Promise<PortalForumBinding | null> {
+  const supabase = getSupabase();
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from('guild_channel_bindings')
+      .select('channel_id, channel_name, server')
+      .eq('discord_guild_id', guildId)
+      .eq('map', PORTAL_FORUM_MAP)
+      .limit(1);
+    if (error) {
+      logger.warn('getPortalForumBinding failed:', error.message);
+      return null;
+    }
+    const binding = data?.[0];
+    return binding
+      ? {
+          channelId: binding.channel_id as string,
+          channelName: (binding.channel_name as string | null) ?? null,
+          server: binding.server as string,
+        }
+      : null;
+  } catch (err) {
+    logger.warn('getPortalForumBinding threw:', err);
+    return null;
+  }
+}
+
 export interface PortalBinding {
   channelId: string;
   server: string;
@@ -172,9 +252,9 @@ export interface PortalBinding {
 }
 
 /** Read all portal-managed bindings for a guild (used by /update all). */
-export async function getPortalBindings(guildId: string): Promise<PortalBinding[]> {
+export async function getPortalBindings(guildId: string): Promise<PortalBinding[] | null> {
   const supabase = getSupabase();
-  if (!supabase) return [];
+  if (!supabase) return null;
   try {
     const { data, error } = await supabase
       .from('guild_channel_bindings')
@@ -182,15 +262,17 @@ export async function getPortalBindings(guildId: string): Promise<PortalBinding[
       .eq('discord_guild_id', guildId);
     if (error) {
       logger.warn('getPortalBindings failed:', error.message);
-      return [];
+      return null;
     }
-    return (data ?? []).map((b) => ({
-      channelId: b.channel_id as string,
-      server: b.server as string,
-      map: b.map as string,
-    }));
+    return (data ?? [])
+      .filter((b) => b.map !== PORTAL_FORUM_MAP)
+      .map((b) => ({
+        channelId: b.channel_id as string,
+        server: b.server as string,
+        map: b.map as string,
+      }));
   } catch (err) {
     logger.warn('getPortalBindings threw:', err);
-    return [];
+    return null;
   }
 }

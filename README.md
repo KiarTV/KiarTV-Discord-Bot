@@ -5,23 +5,28 @@ A Discord bot that integrates with your Ark spots database to provide cave and s
 ## Features
 
 - `/caves` command to fetch all modded cave spots for a specific server and map
-- `/update` command with subcommands to refresh cave spots (clears channel/thread and sends updated list)
+- `/update` command with subcommands to refresh legacy cave channels
   - `here`: Update this channel/thread using saved config or last header
   - `all`: Update all saved channels for the guild
- - `/populatethread` command to clear a target thread and populate all cave messages for a given server and map
+- `/populatethread` command to rebuild every map post inside the guild's connected cave forum
 ### `/populatethread` Command
 
 ```
-/populatethread server:<INX|Fusion|Mesa> forum_id:<Forum Channel ID>
+/populatethread server:<INX|Fusion|Mesa> [forum_id:<Forum Channel ID>]
 ```
 
 Behavior:
-- Fetches all modded cave spots for the specified server across ALL maps
+- Uses the single forum connected in the portal
+- `forum_id` is an optional one-time override that also becomes the saved forum
+- Fetches the portal cave dataset for the specified server across all maps
 - Creates a separate forum post for each map that has spots
 - Each forum post is named `Server - Map` and contains all cave messages for that map
 - Sends all cave messages with the same formatting/attachments used by `/caves`
 - Processes all valid maps for the server automatically
-- Requires Administrator permissions and Create Threads permission in the forum
+- Requires Administrator plus View Channel, Create Public Threads, Send Messages,
+  Read Message History, and Manage Threads permissions in the forum
+- The owner portal starts this refresh automatically when a forum is connected
+  and provides a **Refresh map posts** control; the slash command remains a fallback
 - **Thread Support**: Both commands work in both text channels and threads
 - Server and map header display
 - Farm spots automatically sorted to the end
@@ -283,4 +288,4 @@ CMD ["npm", "start"]
 
 ## License
 
-ISC 
+ISC

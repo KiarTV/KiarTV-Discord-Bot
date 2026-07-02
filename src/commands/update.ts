@@ -11,7 +11,7 @@ import {
 import { fetchSpots } from '../services/apiService';
 import { logger } from '../utils/logger';
 import { getAllGuildChannels, getChannelConfig } from '../services/channelStore';
-import { getPortalBindings } from '../services/portalSync';
+import { getPortalBindings, getPortalForumBinding } from '../services/portalSync';
 import {
   formatCaveText,
   isVideoFile,
@@ -134,10 +134,20 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
         await interaction.editReply({ content: 'This command can only be used in a guild.' });
         return;
       }
-      // Merge local config with portal-managed bindings (portal entries win on conflict).
-      const saved = await getAllGuildChannels(guildId);
-      const merged: Record<string, { server: string; map: string }> = { ...saved };
-      for (const b of await getPortalBindings(guildId)) {
+      const forumBinding = await getPortalForumBinding(guildId);
+      if (forumBinding) {
+        await interaction.editReply({
+          content: `This guild uses one cave forum for all maps. Run \`/populatethread server:${forumBinding.server}\` to rebuild every forum post.`,
+        });
+        return;
+      }
+      // The portal is authoritative when configured, so deleting a portal binding
+      // actually removes it from /update all. Fall back to local storage only when
+      // portal sync is unavailable.
+      const portalBindings = await getPortalBindings(guildId);
+      const merged: Record<string, { server: string; map: string }> =
+        portalBindings === null ? await getAllGuildChannels(guildId) : {};
+      for (const b of portalBindings ?? []) {
         merged[b.channelId] = { server: b.server, map: b.map };
       }
       const entries = Object.entries(merged);
@@ -149,8 +159,21 @@ export async function executeUpdateCommand(interaction: ChatInputCommandInteract
       let failed = 0;
       for (const [savedChannelId, cfg] of entries) {
         try {
+          if (
+            !VALID_SERVERS.includes(cfg.server as typeof VALID_SERVERS[number]) ||
+            !VALID_MAPS.includes(cfg.map as typeof VALID_MAPS[number])
+          ) {
+            logger.warn(`Skipping invalid portal binding ${savedChannelId}: ${cfg.server} / ${cfg.map}`);
+            failed++;
+            continue;
+          }
           const target = await interaction.client.channels.fetch(savedChannelId);
           if (!target || (target.type !== ChannelType.GuildText && target.type !== ChannelType.PublicThread)) {
+            failed++;
+            continue;
+          }
+          if (target.guildId !== guildId) {
+            logger.warn(`Rejected cross-guild binding ${savedChannelId}: expected ${guildId}, got ${target.guildId}`);
             failed++;
             continue;
           }

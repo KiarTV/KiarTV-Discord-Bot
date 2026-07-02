@@ -127,18 +127,47 @@ API_KEY=your_api_key_here
 BOT_PREFIX=!
 LOG_LEVEL=info
 
+# Dedicated secret used by the owner portal to start and inspect forum refresh jobs.
+BOT_PORTAL_SECRET=generate_a_long_random_value
+
 # PM2 Configuration
 PM2_PROCESS_NAME=discord-bot
 BOT_CONFIG_PATH=/var/app-data/bot-config.json
 ```
-```
 
-### 4. Build the Bot
+### 4. Configure Cloudflare Tunnel (optional)
+
+Cloudflare tunnel credentials belong only in the ignored `.env` file. Never
+paste a live token into `docker-compose.yml`, documentation, screenshots, or
+commits.
+
+If a token is ever exposed:
+
+1. Rotate or recreate the tunnel token in Cloudflare.
+2. Put only the replacement token in `.env`:
+
+   ```env
+   CLOUDFLARE_TUNNEL_TOKEN=your_replacement_token
+   ```
+
+3. Start the optional tunnel profile:
+
+   ```bash
+   docker compose --profile tunnel up -d
+   ```
+
+4. Confirm the bot remains healthy:
+
+   ```bash
+   docker compose ps
+   ```
+
+### 5. Build the Bot
 ```bash
 npm run build
 ```
 
-### 5. Start with PM2
+### 6. Start with PM2
 ```bash
 # Start the bot
 pm2 start npm --name "discord-bot" -- start
@@ -150,7 +179,7 @@ pm2 save
 pm2 startup
 ```
 
-### 6. Verify Bot is Running
+### 7. Verify Bot is Running
 ```bash
 # Check status
 pm2 status
@@ -249,6 +278,20 @@ The bot exposes **`GET /health`** on **`BOT_HEALTH_PORT`** (default **3589**). R
 - **Vercel** probes the same URL via **`DISCORD_BOT_HEALTH_URL`** (e.g. `https://bot.example.com/health`). Set **`DISCORD_BOT_HEALTH_SECRET`** on Vercel to the **same value** as **`BOT_HEALTH_SECRET`** on the bot host.
 
 JSON includes Discord readiness, uptime, guild count, gateway ping, KiArTV `/servers` connectivity (`apiConnected`), and optional `botTag` / `botUserId`.
+
+The same HTTP server exposes asynchronous owner-portal forum refresh jobs under
+**`/portal/forum/populate`**. These routes require a separate
+**`BOT_PORTAL_SECRET`** and never accept the health secret.
+
+Configure the bot frontend with server-only variables:
+
+```env
+DISCORD_BOT_PORTAL_URL=https://bot.example.com
+DISCORD_BOT_PORTAL_SECRET=the_same_value_as_BOT_PORTAL_SECRET
+```
+
+For a local portal and bot, use `http://127.0.0.1:3589`. In production, route
+the hostname through Cloudflare Tunnel to the bot container's port `3589`.
 
 ## Monitoring and Maintenance
 

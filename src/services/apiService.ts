@@ -45,6 +45,21 @@ export async function fetchSpots(server: string, map: string, category?: string)
   }
 }
 
+/** Match the focused INX portal dataset: modded locations plus the named INX bunker. */
+export function isPortalLocation(spot: Spot): boolean {
+  const type = spot.type?.trim().toLowerCase() ?? '';
+  const category = spot.category?.trim().toLowerCase() ?? '';
+  const name = spot.name?.trim().toLowerCase() ?? '';
+  const isInxBunker = type === 'bp caves' && name.includes('inx-bunker');
+
+  return isInxBunker || (category === 'modded' && type !== 'bp caves' && type !== '4x notes');
+}
+
+export async function fetchPortalSpots(server: string, map: string): Promise<Spot[]> {
+  const spots = await fetchSpots(server, map);
+  return spots.filter(isPortalLocation);
+}
+
 interface ServerRecord {
   name: string;
   [key: string]: unknown;
@@ -64,36 +79,6 @@ export async function fetchServers(): Promise<ServerRecord[]> {
     logger.error('Error fetching servers:', error);
     throw error;
   }
-}
-
-export async function fetchModdedMapsForServer(server: string): Promise<string[]> {
-  try {
-    const params = new URLSearchParams({ server, category: 'modded', distinct: 'map' });
-    const url = `${getApiBaseUrl()}/spots?${params.toString()}`;
-    const response = await fetchWithTimeout(url, { method: 'GET', headers: apiHeaders() });
-    if (!response.ok) {
-      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
-    }
-    const data = await response.json();
-    const maps: string[] = Array.isArray(data)
-      ? data
-          .map((item: unknown) =>
-            typeof item === 'string' ? item : (item as Record<string, unknown>)?.map,
-          )
-          .filter((m): m is string => typeof m === 'string')
-      : [];
-    const unique = Array.from(new Set(maps));
-    if (unique.length > 0) {
-      logger.info(`Derived ${unique.length} modded maps from API for server ${server}`);
-      return unique;
-    }
-  } catch (error) {
-    logger.warn('fetchModdedMapsForServer failed, will fallback to default maps:', error);
-  }
-  return [
-    'The Island', 'The Center', 'Scorched Earth', 'Ragnarok', 'Aberration', 'Extinction',
-    'Valguero', 'Genesis: Part 1', 'Crystal Isles', 'Genesis: Part 2', 'Lost Island', 'Fjordur',
-  ];
 }
 
 export async function testConnection(): Promise<boolean> {

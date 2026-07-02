@@ -11,7 +11,6 @@ import {
 } from 'discord.js';
 import { fetchSpots } from '../services/apiService';
 import { upsertChannelConfig } from '../services/channelStore';
-import { upsertBinding } from '../services/portalSync';
 import { logger } from '../utils/logger';
 import {
   formatCaveText,
@@ -138,8 +137,6 @@ export async function executeCavesCommand(interaction: ChatInputCommandInteracti
       const channelId = interaction.channelId;
       if (guildId && channelId) {
         await upsertChannelConfig(guildId, channelId, { server, map });
-        // Mirror into the portal so it shows the binding (fire-and-forget).
-        void upsertBinding(guildId, channelId, targetChannel.name ?? null, server, map);
         logger.info(`Saved channel config for guild ${guildId}, channel ${channelId}: ${server} - ${map}`);
       }
     } catch (saveErr) {

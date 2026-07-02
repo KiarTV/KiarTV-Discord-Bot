@@ -1,222 +1,121 @@
 import {
-  SlashCommandBuilder,
   ChatInputCommandInteraction,
-  ForumChannel,
-  ThreadChannel,
-  AttachmentBuilder,
-  PermissionsBitField,
   MessageFlags,
-  ChannelType,
+  SlashCommandBuilder,
 } from 'discord.js';
-import { fetchSpots, fetchModdedMapsForServer } from '../services/apiService';
-import { upsertChannelConfig } from '../services/channelStore';
+import { VALID_SERVERS } from '../constants';
+import { populateForum, ForumPopulationError } from '../services/forumPopulation';
+import { getPortalForumBinding, upsertForumBinding } from '../services/portalSync';
+import { requireAdmin, withTimeout } from '../utils/commandUtils';
 import { logger } from '../utils/logger';
-import {
-  formatCaveText,
-  isVideoFile,
-  isSupabasePublicUrl,
-  withTimeout,
-  requireAdmin,
-} from '../utils/commandUtils';
-import { VALID_MAPS, VALID_SERVERS, MAX_MESSAGES, MAX_VIDEO_BYTES } from '../constants';
 
 export const populateThreadCommand = new SlashCommandBuilder()
   .setName('populatethread')
-  .setDescription('Create forum posts for all maps of a server with cave messages')
+  .setDescription('Refresh every map post in the connected cave forum')
   .addStringOption(option =>
-    option.setName('server')
+    option
+      .setName('server')
       .setDescription('The server name (INX, Fusion, Mesa)')
       .setRequired(true)
       .addChoices(
         { name: 'INX', value: 'INX' },
         { name: 'Fusion', value: 'Fusion' },
         { name: 'Mesa', value: 'Mesa' },
-      )
+      ),
   )
   .addStringOption(option =>
-    option.setName('forum_id')
-      .setDescription('The target forum channel ID')
-      .setRequired(true)
+    option
+      .setName('forum_id')
+      .setDescription('Optional fallback; normal forum management happens in the portal')
+      .setRequired(false),
   );
 
-export async function executePopulateThreadCommand(interaction: ChatInputCommandInteraction) {
+export async function executePopulateThreadCommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
   try {
     if (!await requireAdmin(interaction)) return;
 
     try {
-      await withTimeout(interaction.deferReply({ flags: MessageFlags.Ephemeral }), 2000);
-    } catch (e) {
-      logger.warn('Failed to defer reply', e);
+      await withTimeout(
+        interaction.deferReply({ flags: MessageFlags.Ephemeral }),
+        2_000,
+      );
+    } catch (error) {
+      logger.warn('Failed to defer populate reply:', error);
     }
 
     const server = interaction.options.getString('server', true);
-    const forumId = interaction.options.getString('forum_id', true);
-
-    if (!VALID_SERVERS.includes(server as typeof VALID_SERVERS[number])) {
-      await interaction.editReply({ content: `Invalid server. Allowed: ${VALID_SERVERS.join(', ')}` });
+    if (!VALID_SERVERS.includes(server as (typeof VALID_SERVERS)[number])) {
+      await interaction.editReply({
+        content: `Invalid server. Allowed: ${VALID_SERVERS.join(', ')}`,
+      });
       return;
     }
 
-    let forum: ForumChannel | null = null;
-    try {
-      const ch = await interaction.client.channels.fetch(forumId);
-      if (ch && ch.type === ChannelType.GuildForum) {
-        forum = ch as ForumChannel;
-      }
-    } catch (err) {
-      logger.error('Failed to fetch forum:', err);
-    }
-    if (!forum) {
-      await interaction.editReply({ content: 'Forum not found or not a forum. Provide a valid forum channel ID.' });
-      return;
-    }
+    const explicitForumId = interaction.options.getString('forum_id', false);
+    const savedForum = interaction.guildId
+      ? await getPortalForumBinding(interaction.guildId)
+      : null;
+    const forumId = explicitForumId ?? savedForum?.channelId ?? null;
 
-    const botMember = interaction.guild?.members.me;
-    if (!botMember) {
-      await interaction.editReply({ content: 'Unable to verify bot permissions.' });
-      return;
-    }
-    const perms = forum.permissionsFor(botMember);
-    const required = [
-      PermissionsBitField.Flags.CreatePublicThreads,
-      PermissionsBitField.Flags.SendMessages,
-      PermissionsBitField.Flags.ReadMessageHistory,
-      PermissionsBitField.Flags.ManageThreads,
-    ];
-    if (!perms || !required.every(p => perms.has(p))) {
-      await interaction.editReply({ content: 'Missing required permissions in the target forum (Create Threads, Send Messages, Read History, Manage Threads).' });
-      return;
-    }
-
-    await interaction.editReply({ content: 'Clearing existing forum posts and creating new ones...' });
-
-    try {
-      const existingThreads = await forum.threads.fetchActive();
-      let deletedCount = 0;
-      for (const [, thread] of existingThreads.threads) {
-        try {
-          await thread.delete();
-          deletedCount++;
-          await new Promise(r => setTimeout(r, 500));
-        } catch (err) {
-          logger.warn(`Failed to delete thread ${thread.name}:`, err);
-        }
-      }
-      if (deletedCount > 0) {
-        logger.info(`Deleted ${deletedCount} existing forum posts`);
-        await new Promise(r => setTimeout(r, 1000));
-      }
-    } catch (err) {
-      logger.error('Error clearing existing forum posts:', err);
-      await interaction.editReply({ content: 'Warning: Failed to clear some existing forum posts. Continuing with creation...' });
-    }
-
-    let totalMessageCount = 0;
-    let mapsWithSpots = 0;
-    const createdThreads: ThreadChannel[] = [];
-
-    const mapsToProcess = await fetchModdedMapsForServer(server).catch(() => [...VALID_MAPS]);
-    for (const map of mapsToProcess) {
-      try {
-        const spots = await fetchSpots(server, map, 'modded');
-        if (!spots || spots.length === 0) continue;
-
-        mapsWithSpots++;
-
-        spots.sort((a, b) => {
-          if (a.type === 'farm' && b.type !== 'farm') return 1;
-          if (a.type !== 'farm' && b.type === 'farm') return -1;
-          if (a.type === b.type) return (a.name || '').localeCompare(b.name || '');
-          return (a.type || '').localeCompare(b.type || '');
-        });
-
-        const thread = await forum.threads.create({
-          name: `${server} - ${map}`,
-          message: { content: `${server} - ${map}` },
-        });
-
-        createdThreads.push(thread);
-
-        if (interaction.guildId && thread.id) {
-          await upsertChannelConfig(interaction.guildId, thread.id, { server, map });
-          logger.info(`Saved forum post ${thread.id} for server ${server}, map ${map} in guild ${interaction.guildId}`);
-        }
-
-        let lastType: string | null = null;
-        let idx = 0;
-        let messageCount = 1;
-
-        for (const spot of spots) {
-          if (messageCount >= MAX_MESSAGES) {
-            await thread.send({ content: `... and ${spots.length - messageCount} more spots. Use more specific parameters to see all.` });
-            break;
-          }
-          if (spot.type !== lastType) {
-            await thread.send({ content: `# *————— ${spot.type || 'Unknown'} —————*\n` });
-            lastType = spot.type ?? null;
-            idx = 0;
-            messageCount++;
-          }
-          if (spot.videoFile && typeof spot.videoFile === 'string' && isVideoFile(spot.videoFile)) {
-            try {
-              const response = await fetch(spot.videoFile);
-              if (!response.ok) throw new Error('Failed to fetch video file');
-              const contentLength = Number(response.headers.get('content-length') ?? 0);
-              if (contentLength > MAX_VIDEO_BYTES) {
-                logger.warn(`Video file too large (${contentLength} bytes), skipping attachment`);
-                await thread.send({ content: formatCaveText(spot, idx) + '\n[Video file too large to attach]\n--------------------------------' });
-                messageCount++;
-              } else {
-                const buffer = Buffer.from(await response.arrayBuffer());
-                const filename = spot.videoFile.split('/').pop() || 'video.mp4';
-                const attachment = new AttachmentBuilder(buffer, { name: filename });
-                await thread.send({ content: formatCaveText(spot, idx), files: [attachment] });
-                await thread.send({ content: '--------------------------------' });
-                messageCount += 2;
-              }
-            } catch (err) {
-              logger.error('Failed to attach video file:', err);
-              await thread.send({ content: formatCaveText(spot, idx) + '\n[Failed to attach video file]\n--------------------------------' });
-              messageCount++;
-            }
-          } else {
-            const baseContent = formatCaveText(spot, idx);
-            const hasExternalVideoLink =
-              typeof spot.videoUrl === 'string' &&
-              spot.videoUrl.length > 0 &&
-              !isSupabasePublicUrl(spot.videoUrl);
-            const contentToSend = hasExternalVideoLink ? baseContent : `${baseContent}\n--------------------------------`;
-            await thread.send({ content: contentToSend });
-            messageCount++;
-          }
-          idx++;
-        }
-
-        totalMessageCount += Math.min(messageCount, MAX_MESSAGES);
-        await new Promise(r => setTimeout(r, 2000));
-      } catch (err) {
-        logger.error(`Error processing map ${map} for server ${server}:`, err);
-      }
-    }
-
-    if (mapsWithSpots === 0) {
-      await interaction.editReply({ content: `No modded cave spots found for **${server}** on any map.` });
+    if (!interaction.guildId || !forumId) {
+      await interaction.editReply({
+        content: 'No cave forum is connected. Connect one from the portal first.',
+      });
       return;
     }
 
     await interaction.editReply({
-      content: `✅ Created ${mapsWithSpots} forum posts for **${server}** with ${totalMessageCount} total messages.`,
+      content: 'Refreshing the portal-managed map posts…',
+    });
+
+    const result = await populateForum({
+      client: interaction.client,
+      guildId: interaction.guildId,
+      forumId,
+      server,
+    });
+
+    if (explicitForumId) {
+      await upsertForumBinding(
+        interaction.guildId,
+        result.forumId,
+        result.forumName,
+        server,
+      );
+    }
+
+    const warningText = result.warnings.length
+      ? ` ${result.warnings.length} non-blocking warning${result.warnings.length === 1 ? '' : 's'} occurred.`
+      : '';
+    await interaction.editReply({
+      content:
+        `Created ${result.mapsCreated} map posts with ` +
+        `${result.messagesCreated} messages for **${server}**.${warningText}`,
     });
   } catch (error) {
     logger.error('Error executing populatethread command:', error);
+    const message =
+      error instanceof ForumPopulationError
+        ? error.message
+        : 'The forum could not be refreshed. Try again from the portal.';
+
     if (!interaction.replied && !interaction.deferred) {
       try {
-        await interaction.reply({ content: 'An error occurred. Please try again later.', flags: MessageFlags.Ephemeral });
-      } catch { /* ignore */ }
+        await interaction.reply({
+          content: message,
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch {
+        // Interaction already expired.
+      }
     } else if (interaction.deferred) {
       try {
-        await interaction.editReply({ content: 'An error occurred while populating the thread.' });
-      } catch { /* ignore */ }
+        await interaction.editReply({ content: message });
+      } catch {
+        // Interaction already expired.
+      }
     }
   }
 }

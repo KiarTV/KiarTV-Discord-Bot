@@ -7,7 +7,8 @@
 #   docker compose --profile tunnel up -d --build
 #
 # Tunnel route: bot.kiartv.de → http://discord-bot:${BOT_HEALTH_PORT:-3589}
-# Website env:  DISCORD_BOT_HEALTH_URL=https://bot.kiartv.de/health
+# Main website health probe: DISCORD_BOT_HEALTH_URL=https://bot.kiartv.de/health
+# Portal forum actions:      DISCORD_BOT_PORTAL_URL=https://bot.kiartv.de
 
 name: discord-bot
 
@@ -39,7 +40,7 @@ services:
     restart: unless-stopped
     command: tunnel --no-autoupdate run
     environment:
-      - TUNNEL_TOKEN=eyJhIjoiNThlNGZkZTExYTkwOGFjOWQyZDI0NzE2MzIxOTFmNzgiLCJ0IjoiMjYyNmI0MjQtYTA0Ny00ZmFmLThlMWUtNzU5MWE0YWM4NGQzIiwicyI6Ik5UUXlPV05tWldJdFpEUXhPUzAwWm1WaExUZzVOakl0TjJNME1qVXlaVFpsWW1WbE5EWXdOMlpqTURrdE9EY3dNQzAwWXpJd0xXRmlZamt0TXpGaVlUUmhaVFJsTURVMyJ9
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       discord-bot:
         condition: service_healthy
